@@ -1,10 +1,14 @@
 var chai = require("chai"),
 	expect = chai.expect,
 	assert = chai.assert,
+	fs = require("fs"),
+	path = require("path"),
 	net = require("net"),
+	tls = require("tls"),
 	syslogClient = require("../index.js"),
 	syslogUdpPort = 5514,
 	syslogTcpPort = 5514,
+	syslogTlsPort = 6514,
 	dgram = require("dgram"),
 	net = require("net"),
 	rl = require("readline"),
@@ -13,7 +17,13 @@ var chai = require("chai"),
 	queuedSyslogUdpMessages = [],
 	pendingSyslogUdpPromises = [],
 	queuedSyslogTcpMessages = [],
-	pendingSyslogTcpPromises = [];
+	pendingSyslogTcpPromises = [],
+	queuedSyslogTlsMessages = [],
+	pendingSyslogTlsPromises = [];
+
+	var tlsPrivateKey = fs.readFileSync(path.join(__dirname, "key.pem"), "utf8");
+	var tlsCertificate = fs.readFileSync(path.join(__dirname, "certificate.pem"), "utf8");
+	var wrongCertificate = fs.readFileSync(path.join(__dirname, "wrong.pem"), "utf8");
 
 chai.should();
 
@@ -31,6 +41,15 @@ function awaitSyslogTcpMsg() {
 		if (queued)
 			return resolve(queued);
 		pendingSyslogTcpPromises.push(resolve);
+	});
+}
+
+function awaitSyslogTlsMsg() {
+	return new Promise(function (resolve, reject) {
+		var queued = queuedSyslogTlsMessages.shift();
+		if (queued)
+			return resolve(queued);
+		pendingSyslogTlsPromises.push(resolve);
 	});
 }
 
@@ -89,10 +108,11 @@ function constructRfc5424Regex(pri, hostname, msg, msgid, timestamp) {
 }
 
 var udpServer = dgram.createSocket("udp4"),
-	tcpServer;
+	tcpServer,
+	tlsServer;
 
 before(function (_done) {
-	var count = 2;
+	var count = 3;
 	var done = function () {
 		count--;
 		if (count === 0)
@@ -130,30 +150,48 @@ before(function (_done) {
 		done();
 	});
 
+	tlsServer = tls.createServer({
+		key: tlsPrivateKey,
+		cert: tlsCertificate,
+		secureProtocol: "TLSv1_2_method"
+	}, function (socket) {
+		var lines = rl.createInterface(socket, socket);
+		lines.on("line", function (line) {
+			var pend = pendingSyslogTlsPromises.shift();
+			if (pend)
+				return pend(line);
+			queuedSyslogTlsMessages.push(line);
+		});
+	});
+	tlsServer.on("error", function (err) {
+		throw new Error(err);
+	});
+	tlsServer.listen(syslogTlsPort, function () {
+		console.log("Started TLS syslog server");
+		done();
+	});
 });
 
 describe("Syslog Client", function () {
+	// eslint-disable-next-line max-statements
 	it("should set options correctly with defaults", function (done) {
 		var client;
 		client = new syslogClient.createClient();
 		client.target.should.equal("127.0.0.1");
 		client.port.should.equal(514);
 		client.syslogHostname.should.equal(os.hostname());
-		client.tcpTimeout.should.equal(10000);
 		client.transport.should.equal(syslogClient.Transport.Udp);
 
 		client = new syslogClient.createClient("127.0.0.2");
 		client.target.should.equal("127.0.0.2");
 		client.port.should.equal(514);
 		client.syslogHostname.should.equal(os.hostname());
-		client.tcpTimeout.should.equal(10000);
 		client.transport.should.equal(syslogClient.Transport.Udp);
 
 		client = new syslogClient.createClient("127.0.0.2", {});
 		client.target.should.equal("127.0.0.2");
 		client.port.should.equal(514);
 		client.syslogHostname.should.equal(os.hostname());
-		client.tcpTimeout.should.equal(10000);
 		client.transport.should.equal(syslogClient.Transport.Udp);
 
 		client = new syslogClient.createClient("127.0.0.2", {
@@ -162,7 +200,6 @@ describe("Syslog Client", function () {
 		client.target.should.equal("127.0.0.2");
 		client.port.should.equal(514);
 		client.syslogHostname.should.equal("test");
-		client.tcpTimeout.should.equal(10000);
 		client.transport.should.equal(syslogClient.Transport.Udp);
 
 		client = new syslogClient.createClient("127.0.0.2", {
@@ -172,7 +209,6 @@ describe("Syslog Client", function () {
 		client.target.should.equal("127.0.0.2");
 		client.port.should.equal(5555);
 		client.syslogHostname.should.equal("test");
-		client.tcpTimeout.should.equal(10000);
 		client.transport.should.equal(syslogClient.Transport.Udp);
 
 		client = new syslogClient.createClient("127.0.0.2", {
@@ -197,6 +233,20 @@ describe("Syslog Client", function () {
 		client.syslogHostname.should.equal("test");
 		client.tcpTimeout.should.equal(50);
 		client.transport.should.equal(syslogClient.Transport.Tcp);
+
+		client = new syslogClient.createClient("127.0.0.2", {
+			syslogHostname: "test",
+			port: 5555,
+			tcpTimeout: 50,
+			transport: syslogClient.Transport.Tls,
+			tlsCA: tlsCertificate
+		});
+		client.target.should.equal("127.0.0.2");
+		client.port.should.equal(5555);
+		client.syslogHostname.should.equal("test");
+		client.tcpTimeout.should.equal(50);
+		client.transport.should.equal(syslogClient.Transport.Tls);
+		client.tlsCA.should.equal(tlsCertificate);
 
 		client = new syslogClient.createClient("127.0.0.2", {
 			syslogHostname: "test",
@@ -252,6 +302,27 @@ describe("Syslog Client", function () {
 			assert.match(msg, constructSyslogRegex(134, hostname, "This is a second test"));
 		});
 	});
+	it("should connect to TCP with TLS and send log(s)", function () {
+		var hostname = "testhostname";
+		var client = new syslogClient.createClient("localhost", {
+			port: syslogTlsPort,
+			syslogHostname: hostname,
+			transport: syslogClient.Transport.Tls,
+			tlsCA: tlsCertificate
+		});
+
+ 		client.log("This is a test");
+
+ 		return awaitSyslogTlsMsg()
+		.then(function (msg) {
+			assert.match(msg, constructSyslogRegex(134, hostname, "This is a test"));
+			client.log("This is a second test");
+			return awaitSyslogTlsMsg();
+		})
+		.then(function (msg) {
+			assert.match(msg, constructSyslogRegex(134, hostname, "This is a second test"));
+		});
+	});
 	it("should reuse the UDP transport", function () {
 		var hostname = "testhostname";
 		var client = new syslogClient.createClient("127.0.0.1", {
@@ -291,6 +362,29 @@ describe("Syslog Client", function () {
 			assert.typeOf(transport_, "object");
 			client.log("Transport reuse test 2");
 			return awaitSyslogTcpMsg();
+		})
+		.then(function (msg) {
+			assert.equal(transport_, client.transport_);
+		});
+	});
+	it("should reuse the TLS transport", function () {
+		var hostname = "testhostname";
+		var client = new syslogClient.createClient("localhost", {
+			port: syslogTlsPort,
+			syslogHostname: hostname,
+			transport: syslogClient.Transport.Tls,
+			tlsCA: tlsCertificate
+		});
+
+ 		client.log("Transport reuse test");
+		var transport_;
+
+ 		return awaitSyslogTlsMsg()
+		.then(function (msg) {
+			transport_ = client.transport_;
+			assert.typeOf(transport_, "object");
+			client.log("Transport reuse test 2");
+			return awaitSyslogTlsMsg();
 		})
 		.then(function (msg) {
 			assert.equal(transport_, client.transport_);
@@ -342,6 +436,30 @@ describe("Syslog Client", function () {
 			client.close();
 		})
 	});
+	it("should call close event when closed TLS", function (done) {
+		var hostname = "testhostname";
+		var client = new syslogClient.createClient("localhost", {
+			port: syslogTlsPort,
+			syslogHostname: hostname,
+			transport: syslogClient.Transport.Tls,
+			tlsCA: tlsCertificate
+		});
+
+ 		client.log("Transport close test");
+		client.once("close", function () {
+			assert.equal(client.transport_, undefined);
+			client.once("close", function () {
+				assert.equal(client.transport_, undefined);
+				done();
+			});
+			client.close();
+		});
+
+ 		awaitSyslogTlsMsg()
+		.then(function (msg) {
+			client.close();
+		})
+	});
 	it("should reconnect after connection is closed UDP", function (done) {
 		var hostname = "testhostname";
 		var client = new syslogClient.createClient("127.0.0.1", {
@@ -386,6 +504,31 @@ describe("Syslog Client", function () {
 		});
 
 		awaitSyslogTcpMsg()
+		.then(function (msg) {
+			client.close();
+		})
+	});
+	it("should reconnect after connection is closed TLS", function (done) {
+		var hostname = "testhostname";
+		var client = new syslogClient.createClient("localhost", {
+			port: syslogTlsPort,
+			syslogHostname: hostname,
+			transport: syslogClient.Transport.Tls,
+			tlsCA: tlsCertificate
+		});
+
+ 		client.log("Transport close test");
+		client.once("close", function () {
+			client.log("Restart connection test");
+			awaitSyslogTlsMsg()
+			.then(function (msg) {
+				assert.match(msg, constructSyslogRegex(134, hostname,
+					"Restart connection test"));
+				done();
+			})
+		});
+
+ 		awaitSyslogTlsMsg()
 		.then(function (msg) {
 			client.close();
 		})
@@ -511,6 +654,32 @@ describe("Syslog Client", function () {
 			decFn();
 		});
 	});
+	it("should call on error on connection error TLS when invalid port", function (done) {
+		var hostname = "testhostname";
+		var client = new syslogClient.createClient("localhost", {
+			port: 512342317, // hopefully this isnt in use, TODO find free ports for testing
+			syslogHostname: hostname,
+			transport: syslogClient.Transport.Tls,
+			tlsCA: tlsCertificate
+		});
+
+ 		var count = 2,
+			decFn = function () {
+				count--;
+				if (count === 0)
+					done();
+			};
+
+ 		client.on("error", function (err) {
+			err.should.be.instanceof(Error);
+			decFn();
+		});
+
+ 		client.log("shouldn't work", function (err) {
+			err.should.be.instanceof(Error);
+			decFn();
+		});
+	});
 	it("should call on error on connection error Udp when invalid port", function (done) {
 		var hostname = "testhostname";
 		var client = new syslogClient.createClient("127.0.0.1", {
@@ -562,6 +731,33 @@ describe("Syslog Client", function () {
 			decFn();
 		});
 	});
+	it("should call on error with timeout on connection error TLS", function (done) {
+		var hostname = "testhostname";
+		var client = new syslogClient.createClient("203.0.113.1", {
+			port: syslogTlsPort,
+			tcpTimeout: 500,
+			syslogHostname: hostname,
+			transport: syslogClient.Transport.Tls,
+			tlsCA: tlsCertificate
+		});
+
+ 		var count = 2,
+			decFn = function () {
+				count--;
+				if (count === 0)
+					done();
+			};
+
+ 		client.on("error", function (err) {
+			err.should.be.instanceof(Error);
+			decFn();
+		});
+
+ 		client.log("shouldn't work", function (err) {
+			err.should.be.instanceof(Error);
+			decFn();
+		});
+	});
 	it("should connect to UDP and send back-dated obsolete RFC 3164 log(s)", function () {
 		var hostname = "testhostname";
 		var client = new syslogClient.createClient("127.0.0.1", {
@@ -570,7 +766,7 @@ describe("Syslog Client", function () {
 			transport: syslogClient.Transport.Udp
 		});
 
-		var backdate = new Date(2017, 02, 01);
+		var backdate = new Date(2017, 2, 1);
 		client.log("This is a test", {
 			msgid: 98765, timestamp: backdate
 		});
@@ -595,7 +791,7 @@ describe("Syslog Client", function () {
 			transport: syslogClient.Transport.Udp
 		});
 
-		var backdate = new Date(2017, 02, 01);
+		var backdate = new Date(2017, 2, 1);
 		client.log("This is a test", {
 			rfc3164: false, msgid: 98765, timestamp: backdate
 		});
@@ -610,6 +806,32 @@ describe("Syslog Client", function () {
 		})
 		.then(function (msg) {
 			assert.match(msg, constructRfc5424Regex(134, hostname, "This is a second test", "-"));
+		});
+	});
+	it("should refuse to connect to TLS with invalid certificate", function () {
+		var hostname = "testhostname";
+		var client = new syslogClient.createClient("localhost", {
+			port: syslogTlsPort,
+			syslogHostname: hostname,
+			transport: syslogClient.Transport.Tls,
+			tlsCA: wrongCertificate
+		});
+
+ 		var count = 2,
+			decFn = function () {
+				count--;
+				if (count === 0)
+					done();
+			};
+
+ 		client.on("error", function (err) {
+			err.should.be.instanceof(Error);
+			decFn();
+		});
+
+ 		client.log("shouldn't work", function (err) {
+			err.should.be.instanceof(Error);
+			decFn();
 		});
 	});
 });
