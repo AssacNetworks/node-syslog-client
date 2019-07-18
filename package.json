@@ -27,7 +27,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git://github.com/paulgrove/node-syslog-client.git"
+    "url": "git://github.com/PerimeterX/node-syslog-client.git"
   },
   "keywords": [
     "logger",
