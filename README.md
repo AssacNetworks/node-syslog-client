@@ -1,19 +1,17 @@
-# syslog-client
-
-[![Build Status](https://travis-ci.org/paulgrove/node-syslog-client.svg?branch=master)](https://travis-ci.org/paulgrove/node-syslog-client) [![Code Climate](https://codeclimate.com/github/paulgrove/node-syslog-client/badges/gpa.svg)](https://codeclimate.com/github/paulgrove/node-syslog-client) [![Test Coverage](https://codeclimate.com/github/paulgrove/node-syslog-client/badges/coverage.svg)](https://codeclimate.com/github/paulgrove/node-syslog-client/coverage) [![Issue Count](https://codeclimate.com/github/paulgrove/node-syslog-client/badges/issue_count.svg)](https://codeclimate.com/github/paulgrove/node-syslog-client)
+# syslog-client-tls
 
 This module is a pure JavaScript implementation of the [BSD Syslog Protocol RFC 3164][1] and the [Syslog Protocol RFC 5424][2].
 
 This module is installed using [node package manager (npm)][3]:
 
 ```
-npm install syslog-client
+npm install syslog-client-tls
 ```
 
 It is loaded using the `require()` function:
 
 ```js
-var syslog = require("syslog-client");
+var syslog = require("syslog-client-tls");
 ```
 
 TCP or UDP clients can then be created to log messages to remote hosts.
