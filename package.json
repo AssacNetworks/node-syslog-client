@@ -1,6 +1,6 @@
 {
   "name": "syslog-client-tls",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "TCP and UDP syslog client RFC 5424 & RFC 3164",
   "main": "index.js",
   "scripts": {
