@@ -305,7 +305,8 @@ Client.prototype.getTransport = function getTransport(cb) {
 			port: this.port,
 			family: af,
 			ca: this.tlsCA,
-			secureProtocol: 'TLSv1_2_method'
+			secureProtocol: 'TLSv1_2_method',
+			rejectUnauthorized: false
 		}
 		
 		var tlsTransport;
